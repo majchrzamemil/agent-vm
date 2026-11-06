@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# Run Claude Code, opencode or any command inside a nix-vm microVM scoped to one workspace.
+set -euo pipefail
+
+SELF_DIR=$(dirname "$(readlink -f "$0")")
+# Machine-specific config flake written by `agent-vm setup` (gitignored).
+CONFIG_DIR=$SELF_DIR/local
+CONFIG_FLAKE=path:$CONFIG_DIR
+VM=agent
+SENSITIVE_DIRS=(.ssh .gnupg .aws .kube .docker .password-store .config .local .claude .cargo)
+SKIP_DIRS=(\( -name target -o -name node_modules \) -prune -o)
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: agent-vm setup [--force] [--vcpu N] [--mem MiB] [--nix-vm FLAKEREF] [DEVSHELL...]
+       agent-vm [-w DIR] [--force] [--yolo] [--no-secrets] [--timeout SECS] <command> [args...]
+  setup           write the machine config to local/ (DEVSHELL: flake dir or ref whose
+                  devShells.x86_64-linux.default is baked into the guest)
+  claude [args]   Claude in the VM; with -p/--print it runs headless, otherwise interactive TUI
+  opencode [args] opencode in the VM; `opencode run ...` is headless, otherwise interactive TUI
+  run <cmd...>    run a shell command in the VM (headless, output streamed, exit code returned)
+  console         interactive serial console (poweroff to leave)
+  vm <args>       raw nix-vm helper (list, build, ...)
+The workspace ($PWD, or -w DIR) is shared read-write at the same path; nothing else is.
+  --force         allow a broad or sensitive workspace (e.g. $HOME)
+  --yolo          claude --dangerously-skip-permissions
+  --no-secrets    do not inject CLAUDE_CODE_OAUTH_TOKEN / GH_TOKEN or opencode auth.json
+  --timeout SECS  headless time limit (default 14400)
+USAGE
+    exit 2
+}
+
+# A local directory becomes git+file:// (tracked files at the working tree) or path:.
+flake_ref() {
+    if [[ ! -d $1 ]]; then echo "$1"; return; fi
+    local dir; dir=$(readlink -f "$1")
+    if [[ $(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) == "$dir" ]]; then
+        echo "git+file://$dir"
+    else
+        echo "path:$dir"
+    fi
+}
+
+setup() {
+    local force=0 vcpu mem nix_vm="" shells=() inputs="" names="" i
+    vcpu=$(nproc) mem=$(awk '/MemTotal/ { print int($2 / 2048) }' /proc/meminfo)
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --force) force=1; shift ;;
+            --vcpu) vcpu=${2:?}; shift 2 ;;
+            --mem) mem=${2:?}; shift 2 ;;
+            --nix-vm) nix_vm=$(flake_ref "${2:?}"); shift 2 ;;
+            -*) usage ;;
+            *) shells+=("$(flake_ref "$1")"); shift ;;
+        esac
+    done
+    [[ $vcpu =~ ^[0-9]+$ && $mem =~ ^[0-9]+$ ]] || { echo "agent-vm: --vcpu/--mem must be numbers" >&2; exit 2; }
+    if [[ -e $CONFIG_DIR/flake.nix && $force == 0 ]]; then
+        echo "agent-vm: $CONFIG_DIR/flake.nix exists; edit it, or rerun with --force" >&2; exit 1
+    fi
+    if [[ -n $nix_vm ]]; then inputs+="    agent-vm.inputs.nix-vm.url = \"$nix_vm\";"$'\n'; fi
+    for i in "${!shells[@]}"; do
+        inputs+="    devshell$i.url = \"${shells[i]}\";"$'\n'
+        names+=" devshell$i"
+    done
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_DIR/flake.nix" <<EOF
+# Written by \`agent-vm setup\`; machine-specific and gitignored. Edit freely.
+{
+  inputs = {
+    agent-vm.url = "git+file://$SELF_DIR";
+$inputs  };
+
+  outputs = inputs: {
+    packages = inputs.agent-vm.lib.mkAgentVm {
+      user = "$(id -un)";
+      home = "$HOME";
+      configDir = "$CONFIG_DIR";
+      vcpu = $vcpu;
+      mem = $mem;
+      devShells = map (i: i.devShells.x86_64-linux.default) (with inputs; [$names ]);
+      # extraModules = [ ({ pkgs, ... }: { environment.systemPackages = [ pkgs.htop ]; }) ];
+    };
+  };
+}
+EOF
+    if [[ ! -e $CONFIG_DIR/refuse.txt ]]; then
+        printf '%s\n' '# Workspaces refused without --force, one absolute path per line (e.g. a dir holding all your repos).' \
+            > "$CONFIG_DIR/refuse.txt"
+    fi
+    nix flake lock "$CONFIG_FLAKE" --allow-dirty-locks
+    echo "agent-vm: wrote $CONFIG_DIR/flake.nix and $CONFIG_DIR/refuse.txt" >&2
+}
+
+WS=$PWD force=0 yolo=0 no_secrets=0 trust=() timeout=14400
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -w) WS=${2:?}; shift 2 ;;
+        --force) force=1; shift ;;
+        --yolo) yolo=1; shift ;;
+        --no-secrets) no_secrets=1; trust=(--trust shares); shift ;;
+        --timeout) timeout=${2:?}; shift 2 ;;
+        -h | --help) usage ;;
+        *) break ;;
+    esac
+done
+[[ $# -gt 0 ]] || usage
+cmd=$1; shift
+
+if [[ $cmd == setup ]]; then setup "$@"; exit; fi
+if [[ ! -f $CONFIG_DIR/flake.nix ]]; then echo "agent-vm: not set up yet, run: agent-vm setup" >&2; exit 1; fi
+
+vm() { nix run "$CONFIG_FLAKE#nix-vm" -- "$@"; }
+
+if [[ $cmd == vm ]]; then vm "$@"; exit; fi
+
+# Refuse workspaces that expose the host home, its ancestors, dotdirs, credential dirs, or refuse.txt.
+WS=$(readlink -f "$WS")
+[[ -d $WS ]] || { echo "agent-vm: $WS is not a directory" >&2; exit 1; }
+if [[ $force == 0 ]]; then
+    if [[ $HOME/ == "$WS/"* ]] || grep -qxF -- "$WS" "$CONFIG_DIR/refuse.txt" 2>/dev/null; then
+        echo "agent-vm: refusing broad workspace $WS (use --force)" >&2; exit 1
+    fi
+    if [[ $WS == "$HOME"/.* ]]; then echo "agent-vm: refusing dotdir workspace $WS (use --force)" >&2; exit 1; fi
+    for d in "${SENSITIVE_DIRS[@]}"; do
+        if [[ $WS/ == */"$d"/* ]]; then echo "agent-vm: refusing sensitive workspace $WS (use --force)" >&2; exit 1; fi
+    done
+fi
+run_dir=$WS
+if [[ $PWD == "$WS"/* ]]; then run_dir=$PWD; fi
+
+# Local inputs (this repo, dev shells) are locked by rev; relock so the guest follows their HEADs.
+(nix flake update --flake "$CONFIG_FLAKE" --allow-dirty-locks 2>&1 | grep -v '^warning:' >&2) || true
+
+# Host Claude config goes in one way, as a private per-launch copy (reflinks on btrfs).
+# Settings drop host-only env, sandbox and hook commands (their binaries are not in the guest).
+claude_dir=$HOME/.claude
+mkdir -p "$HOME/.cache/agent-vm"
+runtime_dir=$(mktemp -d "$HOME/.cache/agent-vm/run.XXXXXX")
+trap 'rm -rf "$runtime_dir"' EXIT
+stage=$runtime_dir/stage cstage=$runtime_dir/stage/claude
+mkdir -p "$cstage/projects"
+for item in CLAUDE.md skills agents commands hooks plugins output-styles; do
+    if [[ -e $claude_dir/$item ]]; then cp -a --reflink=auto "$claude_dir/$item" "$cstage/$item"; fi
+done
+if [[ -f $claude_dir/settings.json ]]; then
+    jq 'del(.env, .sandbox, .hooks)' "$claude_dir/settings.json" > "$cstage/settings.json"
+fi
+
+# opencode config and provider logins, also one way: guest token refreshes never reach the host.
+oc_config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode oc_data=${XDG_DATA_HOME:-$HOME/.local/share}/opencode
+oc_state=${XDG_STATE_HOME:-$HOME/.local/state}/opencode
+mkdir -p "$stage/opencode/config" "$stage/opencode/data" "$stage/opencode/state"
+# model.json holds the recently used model, which the guest would otherwise pick at random.
+if [[ -f $oc_state/model.json ]]; then cp "$oc_state/model.json" "$stage/opencode/state/"; fi
+if [[ -d $oc_config ]]; then
+    cp -a --reflink=auto "$oc_config/." "$stage/opencode/config/"
+    rm -f "$stage/opencode/config/service.json"
+fi
+if [[ $no_secrets == 0 && -f $oc_data/auth.json ]]; then
+    install -m 600 "$oc_data/auth.json" "$stage/opencode/data/auth.json"
+fi
+
+: > "$stage/gitconfig"
+for key in user.name user.email; do
+    value=$(git config --get "$key") && git config -f "$stage/gitconfig" "$key" "$value"
+done
+printf '%s' "$WS" > "$stage/ws"
+jq -n --arg ws "$WS" --arg pwd "$run_dir" --argjson yolo "$yolo" '{
+    hasCompletedOnboarding: true,
+    bypassPermissionsModeAccepted: ($yolo == 1),
+    projects: { ($ws): { hasTrustDialogAccepted: true }, ($pwd): { hasTrustDialogAccepted: true } }
+}' > "$cstage/.claude.json"
+
+# Only this workspace's memory is staged; the guest may edit it and the host reviews the diff.
+mapfile -t memory_keys < <(printf '%s\n' "${run_dir//[^a-zA-Z0-9]/-}" "${WS//[^a-zA-Z0-9]/-}" | sort -u)
+for key in "${memory_keys[@]}"; do
+    mkdir -p "$cstage/projects/$key/memory"
+    if [[ -d $claude_dir/projects/$key/memory ]]; then
+        find "$claude_dir/projects/$key/memory" -maxdepth 1 -type f -name '*.md' \
+            -exec cp {} "$cstage/projects/$key/memory/" \;
+    fi
+done
+
+# Only regular top-level *.md files count, so planted symlinks or binaries never reach the host.
+review_memory() {
+    local key staged clean host patch=$runtime_dir/memory.patch answer
+    : > "$patch"
+    for key in "${memory_keys[@]}"; do
+        staged=$cstage/projects/$key/memory clean=$runtime_dir/clean/$key host=$claude_dir/projects/$key/memory
+        mkdir -p "$clean"
+        find "$staged" -maxdepth 1 -type f -name '*.md' -exec cp {} "$clean/" \;
+        diff -ruN --label "host/$key" --label "guest/$key" \
+            <(if [[ -d $host ]]; then cd "$host" && tail -v -n +1 -- *.md 2>/dev/null; fi) \
+            <(cd "$clean" && tail -v -n +1 -- *.md 2>/dev/null) >> "$patch" || true
+    done
+    if [[ ! -s $patch ]]; then return; fi
+    echo "agent-vm: the agent changed Claude memory:" >&2
+    cat "$patch" >&2
+    answer=n
+    { read -r -p "Apply these memory changes to the host? [y/N] " answer < /dev/tty; } 2>/dev/null || true
+    if [[ $answer != [yY] ]]; then echo "agent-vm: memory changes discarded" >&2; return; fi
+    for key in "${memory_keys[@]}"; do
+        host=$claude_dir/projects/$key/memory clean=$runtime_dir/clean/$key
+        if [[ -z $(ls -A "$clean") && ! -d $host ]]; then continue; fi
+        mkdir -p "$host"
+        find "$host" -maxdepth 1 -type f -name '*.md' -delete
+        find "$clean" -maxdepth 1 -type f -name '*.md' -exec cp {} "$host/" \;
+    done
+    echo "agent-vm: memory changes applied" >&2
+}
+
+# The guest can create new repos (or swap a .git) with a planted core.fsmonitor etc.;
+# diff .git inodes after the run and flag dangerous config keys.
+git_inventory() { find "$WS" "${SKIP_DIRS[@]}" -name .git -printf '%i %p\n' -prune | sort; }
+git_tripwire() {
+    local changed gitpath config
+    changed=$(comm -13 <(echo "$1") <(git_inventory) | cut -d' ' -f2-)
+    [[ -n $changed ]] || return 0
+    echo "agent-vm: WARNING: new or replaced git repos; inspect before running git in them:" >&2
+    while IFS= read -r gitpath; do
+        echo "  $gitpath" >&2
+        config=$gitpath/config
+        if [[ -f $gitpath ]]; then config=$gitpath; fi
+        grep -inE 'fsmonitor|hookspath|sshcommand|askpass|editor|pager|textconv|smudge|clean|process|helper|alias|gitdir' \
+            "$config" 2>/dev/null | sed 's/^/      /' >&2 || true
+    done <<< "$changed"
+}
+
+claude_cmd=(claude)
+if [[ $yolo == 1 ]]; then claude_cmd+=(--dangerously-skip-permissions); fi
+in_pwd() { printf 'cd %q && %s' "$run_dir" "$1"; }
+
+headless=""
+case $cmd in
+    claude)
+        claude_cmd+=("$@")
+        for a in "$@"; do if [[ $a == -p || $a == --print ]]; then headless=1; fi; done
+        if [[ -n $headless ]]; then
+            headless=$(in_pwd "${claude_cmd[*]@Q}")
+        else
+            in_pwd "${claude_cmd[*]@Q}" > "$stage/cmd"
+        fi ;;
+    opencode)
+        if [[ ${1:-} == run ]]; then
+            headless=$(in_pwd "opencode ${*@Q}")
+        else
+            in_pwd "opencode ${*@Q}" > "$stage/cmd"
+        fi ;;
+    run) [[ $# -gt 0 ]] || usage; headless=$(in_pwd "$*") ;;
+    console) ;;
+    *) usage ;;
+esac
+
+if [[ -z $headless ]]; then touch "$stage/tty"; fi
+export AGENT_VM_STAGE=$stage
+before=$(git_inventory)
+status=0
+if [[ -n $headless ]]; then
+    vm run "${trust[@]}" --mount "$WS" --timeout "$timeout" "$VM" "$headless" || status=$?
+else
+    vm up "${trust[@]}" --mount "$WS" "$VM" || status=$?
+fi
+review_memory
+git_tripwire "$before"
+exit "$status"
