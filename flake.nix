@@ -74,8 +74,8 @@
             };
 
           # Claude and opencode run from config copies in the stage, linked to their usual paths.
-          # Interactive launches drop `tty` (serial console has no window size, so `resize` asks the
-          # terminal) and optionally `cmd`, auto-run once; the VM powers off after.
+          # Interactive launches drop `tty`, `termenv` and `winsize` (a serial console carries no TERM or
+          # window size) and optionally `cmd`, auto-run once; the VM powers off after.
           agentModule =
             { pkgs, ... }:
             let
@@ -108,6 +108,22 @@
                 "L+ ${home}/.local/state/opencode - - - - ${stage}/opencode/state"
               ];
               environment.variables.OPENCODE_DISABLE_AUTOUPDATE = "1";
+              # The host's TERM (tmux, ghostty, kitty, ...) is passed through to the console.
+              environment.enableAllTerminfo = true;
+              # Applies the host terminal size the launcher mirrors into the stage; setting it makes
+              # the kernel send SIGWINCH to the console's foreground job, so TUIs redraw.
+              systemd.services.agent-vm-winsize = {
+                wantedBy = [ "multi-user.target" ];
+                unitConfig.RequiresMountsFor = [ stage ];
+                unitConfig.ConditionPathExists = "${stage}/tty";
+                script = ''
+                  while sleep 1; do
+                    want=$(cat ${stage}/winsize 2>/dev/null) || continue
+                    [ "$(stty -F /dev/ttyS0 size)" = "$want" ] && continue
+                    stty -F /dev/ttyS0 rows "''${want% *}" cols "''${want#* }"
+                  done
+                '';
+              };
               environment.systemPackages = [
                 claude-code
                 opencode
@@ -132,10 +148,9 @@
                 };
               };
               environment.loginShellInit = ''
-                # Only for a human at the console: `vm run` types its command right after login, and
-                # resize would swallow it while waiting for the terminal's reply.
+                # Only for a human at the console; `vm run` logs in on ttyS0 too, but without the `tty` marker.
                 if [ "$(tty)" = /dev/ttyS0 ] && [ -f ${stage}/tty ]; then
-                  ${pkgs.busybox}/bin/resize >/dev/null 2>&1 || true
+                  . ${stage}/termenv
                   if [ -f ${stage}/cmd ] && [ -z "''${AGENT_VM_STARTED:-}" ]; then
                     export AGENT_VM_STARTED=1
                     agent_vm_cmd=$(cat ${stage}/cmd)

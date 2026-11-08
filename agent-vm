@@ -256,7 +256,18 @@ case $cmd in
     *) usage ;;
 esac
 
-if [[ -z $headless ]]; then touch "$stage/tty"; fi
+if [[ -z $headless ]]; then
+    touch "$stage/tty"
+    printf 'export TERM=%q COLORTERM=%q\n' "$TERM" "${COLORTERM:-}" > "$stage/termenv"
+    # A serial console carries no SIGWINCH; mirror the terminal size for the guest to apply.
+    (
+        prev=""
+        while [[ -d $stage ]] && size=$(stty size < /dev/tty 2>/dev/null); do
+            if [[ $size != "$prev" ]]; then printf '%s\n' "$size" > "$stage/winsize"; prev=$size; fi
+            sleep 1
+        done
+    ) &
+fi
 export AGENT_VM_STAGE=$stage
 before=$(git_inventory)
 status=0
