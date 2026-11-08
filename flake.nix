@@ -115,6 +115,7 @@
                 pkgs.jq
                 pkgs.ripgrep
                 pkgs.just
+                pkgs.nodejs
               ];
               environment.variables.CLAUDE_CONFIG_DIR = "${home}/.claude";
               programs.git = {
