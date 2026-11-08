@@ -20,6 +20,8 @@ secret-tool store --label 'agent-vm GH_TOKEN' service agent-vm key GH_TOKEN     
 secret-tool store --label 'agent-vm claude' service agent-vm key CLAUDE_CODE_OAUTH_TOKEN   # from `claude setup-token`
 ```
 
+More secrets: store each under `service agent-vm key NAME` and list it in `local/flake.nix` as `extraSecrets = [ "NAME" ];`. The guest gets it as env var `NAME`.
+
 `setup` writes the machine-specific config to `local/` (gitignored):
 
 - `local/flake.nix`: your user, home, the VM size and the dev-shell flakes. It calls `lib.mkAgentVm` from this repo. Edit it freely, for example to add `extraModules`. `setup --force` regenerates it.

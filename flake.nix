@@ -27,6 +27,8 @@
           mem ? 8192,
           devShells ? [ ],
           extraModules ? [ ],
+          # Extra keyring keys (`service agent-vm key NAME`), injected as env var NAME.
+          extraSecrets ? [ ],
         }:
         let
           workspaceMount = "/mnt/workspace";
@@ -206,10 +208,13 @@
                     "secrets"
                   ];
                   allowUnfree = true; # claude-code
-                  secrets = map keyringSecret [
-                    "CLAUDE_CODE_OAUTH_TOKEN"
-                    "GH_TOKEN"
-                  ];
+                  secrets = map keyringSecret (
+                    [
+                      "CLAUDE_CODE_OAUTH_TOKEN"
+                      "GH_TOKEN"
+                    ]
+                    ++ extraSecrets
+                  );
                   # The launcher exports AGENT_VM_STAGE; without it the share is empty.
                   hostPreLaunch = ''
                     if [ -n "''${AGENT_VM_STAGE:-}" ]; then ln -sfn "$AGENT_VM_STAGE" agent; fi

@@ -24,7 +24,7 @@ usage: agent-vm setup [--force] [--vcpu N] [--mem MiB] [--nix-vm FLAKEREF] [DEVS
 The workspace ($PWD, or -w DIR) is shared read-write at the same path; nothing else is.
   --force         allow a broad or sensitive workspace (e.g. $HOME)
   --yolo          claude --dangerously-skip-permissions
-  --no-secrets    do not inject CLAUDE_CODE_OAUTH_TOKEN / GH_TOKEN or opencode auth.json
+  --no-secrets    do not inject keyring secrets or opencode auth.json
   --timeout SECS  headless time limit (default 14400)
 USAGE
     exit 2
@@ -80,6 +80,7 @@ $inputs  };
       mem = $mem;
       devShells = map (i: i.devShells.x86_64-linux.default) (with inputs; [$names ]);
       # extraModules = [ ({ pkgs, ... }: { environment.systemPackages = [ pkgs.htop ]; }) ];
+      # extraSecrets = [ "HASS_TOKEN" ];
     };
   };
 }
