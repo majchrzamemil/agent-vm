@@ -23,7 +23,7 @@ usage: agent-vm setup [--force] [--vcpu N] [--mem MiB] [--nix-vm FLAKEREF] [DEVS
   vm <args>       raw nix-vm helper (list, build, ...)
 The workspace ($PWD, or -w DIR) is shared read-write at the same path; nothing else is.
   --force         allow a broad or sensitive workspace (e.g. $HOME)
-  --yolo          claude --dangerously-skip-permissions
+  --yolo          claude --dangerously-skip-permissions / opencode --auto
   --no-secrets    do not inject keyring secrets or opencode auth.json
   --timeout SECS  headless time limit (default 14400)
 USAGE
@@ -243,10 +243,13 @@ case $cmd in
             in_pwd "${claude_cmd[*]@Q}" > "$stage/cmd"
         fi ;;
     opencode)
+        oc_cmd=(opencode "$@")
+        if [[ $yolo == 1 && ${1:-} == run ]]; then oc_cmd=(opencode run --auto "${@:2}")
+        elif [[ $yolo == 1 ]]; then oc_cmd=(opencode --auto "$@"); fi
         if [[ ${1:-} == run ]]; then
-            headless=$(in_pwd "opencode ${*@Q}")
+            headless=$(in_pwd "${oc_cmd[*]@Q}")
         else
-            in_pwd "opencode ${*@Q}" > "$stage/cmd"
+            in_pwd "${oc_cmd[*]@Q}" > "$stage/cmd"
         fi ;;
     run) [[ $# -gt 0 ]] || usage; headless=$(in_pwd "$*") ;;
     console) ;;

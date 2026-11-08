@@ -39,7 +39,7 @@ The workspace is `$PWD`, or `-w DIR`. Each launch is a fresh VM (about 10 s to b
 ```sh
 agent-vm claude                          # interactive Claude on the VM serial console; the VM powers off when it exits
 agent-vm claude -p "run just unit and fix failures"   # headless; output streamed, exit code returned
-agent-vm --yolo claude -p "..."          # --dangerously-skip-permissions
+agent-vm --yolo claude -p "..."          # --dangerously-skip-permissions (opencode: --auto)
 agent-vm opencode                        # interactive opencode TUI
 agent-vm opencode run "..."              # headless opencode
 agent-vm run 'just unit'                 # any command, headless
