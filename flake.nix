@@ -139,6 +139,8 @@
                     export AGENT_VM_STARTED=1
                     agent_vm_cmd=$(cat ${stage}/cmd)
                     rm -f ${stage}/cmd
+                    # Ctrl-C on a hung agent would otherwise abort this profile before poweroff.
+                    trap : INT
                     bash -c "$agent_vm_cmd"
                     sudo poweroff
                   fi
