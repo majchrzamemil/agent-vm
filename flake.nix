@@ -140,10 +140,10 @@
                     export AGENT_VM_STARTED=1
                     agent_vm_cmd=$(cat ${stage}/cmd)
                     rm -f ${stage}/cmd
-                    # Ctrl-C on a hung agent would otherwise abort this profile before poweroff.
+                    # Poweroff lives in the child: a signal to the agent's process group can abort
+                    # this profile, but the trapping bash survives it and still powers off.
                     trap : INT
-                    bash -c "$agent_vm_cmd"
-                    sudo poweroff
+                    bash -c "trap : INT TERM HUP; $agent_vm_cmd; sudo poweroff"
                   fi
                 fi
               '';
