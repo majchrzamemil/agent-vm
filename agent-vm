@@ -174,8 +174,8 @@ jq -n --arg ws "$WS" --arg pwd "$run_dir" --argjson yolo "$yolo" '{
 }' > "$cstage/.claude.json"
 
 # Only this workspace's memory is staged; the guest may edit it and the host reviews the diff.
-mapfile -t memory_keys < <(printf '%s\n' "${run_dir//[^a-zA-Z0-9]/-}" "${WS//[^a-zA-Z0-9]/-}" | sort -u)
-for key in "${memory_keys[@]}"; do
+mapfile -t project_keys < <(printf '%s\n' "${run_dir//[^a-zA-Z0-9]/-}" "${WS//[^a-zA-Z0-9]/-}" | sort -u)
+for key in "${project_keys[@]}"; do
     mkdir -p "$cstage/projects/$key/memory"
     if [[ -d $claude_dir/projects/$key/memory ]]; then
         find "$claude_dir/projects/$key/memory" -maxdepth 1 -type f -name '*.md' \
@@ -183,11 +183,32 @@ for key in "${memory_keys[@]}"; do
     fi
 done
 
+# Guest transcripts persist per workspace for --resume/--continue, apart from the host's ~/.claude.
+sessions_dir=${XDG_STATE_HOME:-$HOME/.local/state}/agent-vm/sessions
+for key in "${project_keys[@]}"; do
+    if [[ -d $sessions_dir/$key ]]; then cp -a --reflink=auto "$sessions_dir/$key/." "$cstage/projects/$key/"; fi
+done
+# Saved stores only regular files and dirs, so merging never writes through a guest-planted symlink.
+# Merged, not replaced: concurrent launches in one workspace each keep their sessions.
+save_sessions() {
+    local key tmp
+    for key in "${project_keys[@]}"; do
+        tmp=$runtime_dir/sessions/$key
+        mkdir -p "$tmp" "$sessions_dir/$key"
+        cp -a --reflink=auto "$cstage/projects/$key/." "$tmp/"
+        rm -rf "$tmp/memory"
+        find "$tmp" ! -type f ! -type d -delete
+        cp -a --reflink=auto "$tmp/." "$sessions_dir/$key/"
+    done
+}
+# Set only after restoring, so an early abort never saves a partial stage. Runs on SIGHUP/SIGTERM too.
+trap 'save_sessions || true; rm -rf "$runtime_dir"' EXIT
+
 # Only regular top-level *.md files count, so planted symlinks or binaries never reach the host.
 review_memory() {
     local key staged clean host patch=$runtime_dir/memory.patch answer
     : > "$patch"
-    for key in "${memory_keys[@]}"; do
+    for key in "${project_keys[@]}"; do
         staged=$cstage/projects/$key/memory clean=$runtime_dir/clean/$key host=$claude_dir/projects/$key/memory
         mkdir -p "$clean"
         find "$staged" -maxdepth 1 -type f -name '*.md' -exec cp {} "$clean/" \;
@@ -201,7 +222,7 @@ review_memory() {
     answer=n
     { read -r -p "Apply these memory changes to the host? [y/N] " answer < /dev/tty; } 2>/dev/null || true
     if [[ $answer != [yY] ]]; then echo "agent-vm: memory changes discarded" >&2; return; fi
-    for key in "${memory_keys[@]}"; do
+    for key in "${project_keys[@]}"; do
         host=$claude_dir/projects/$key/memory clean=$runtime_dir/clean/$key
         if [[ -z $(ls -A "$clean") && ! -d $host ]]; then continue; fi
         mkdir -p "$host"
