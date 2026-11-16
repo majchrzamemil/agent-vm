@@ -13,9 +13,12 @@ SKIP_DIRS=(\( -name target -o -name node_modules \) -prune -o)
 usage() {
     cat >&2 <<'USAGE'
 usage: agent-vm setup [--force] [--vcpu N] [--mem MiB] [--nix-vm FLAKEREF] [DEVSHELL...]
-       agent-vm [-w DIR] [--force] [--yolo] [--no-secrets] [--timeout SECS] <command> [args...]
+       agent-vm update-deps
+       agent-vm [-w DIR] [--force] [--yolo] [--no-secrets] [--no-update] [--timeout SECS] <command> [args...]
   setup           write the machine config to local/ (DEVSHELL: flake dir or ref whose
                   devShells.x86_64-linux.default is baked into the guest)
+  update-deps     bump flake inputs, pin Claude Code and opencode to the host's versions,
+                  then build a bare VM to check (run on the host)
   claude [args]   Claude in the VM; with -p/--print it runs headless, otherwise interactive TUI
   opencode [args] opencode in the VM; `opencode run ...` is headless, otherwise interactive TUI
   run <cmd...>    run a shell command in the VM (headless, output streamed, exit code returned)
@@ -25,6 +28,7 @@ The workspace ($PWD, or -w DIR) is shared read-write at the same path; nothing e
   --force         allow a broad or sensitive workspace (e.g. $HOME)
   --yolo          claude --dangerously-skip-permissions / opencode --auto
   --no-secrets    do not inject keyring secrets or opencode auth.json
+  --no-update     do not pin guest Claude Code and opencode to the host's versions on start
   --timeout SECS  headless time limit (default 14400)
 USAGE
     exit 2
@@ -93,13 +97,62 @@ EOF
     echo "agent-vm: wrote $CONFIG_DIR/flake.nix and $CONFIG_DIR/refuse.txt" >&2
 }
 
-WS=$PWD force=0 yolo=0 no_secrets=0 trust=() timeout=14400
+# Pin guest Claude Code and opencode to the host's versions. Runs on every launch, so it fetches only
+# when a version changed and never fails the launch: a missing tool or no network keeps the old pin.
+sync_agents() {
+    local claude opencode manifest hash oc_config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode
+    claude=$(claude --version 2>/dev/null | cut -d' ' -f1) || true
+    if [[ -n $claude && $claude != "$(jq -r .version "$SELF_DIR/claude-manifest.json")" ]]; then
+        if manifest=$(curl -fsSL "https://downloads.claude.ai/claude-code-releases/$claude/manifest.json"); then
+            echo "$manifest" > "$SELF_DIR/claude-manifest.json"
+            echo "agent-vm: guest claude-code pinned to host's $claude" >&2
+        else
+            echo "agent-vm: could not fetch the claude-code $claude manifest, keeping the old pin" >&2
+        fi
+    fi
+
+    # Guest opencode follows the host's @opencode-ai/plugin, so host plugins keep working in the VM.
+    opencode=$({ jq -r .version "$oc_config/node_modules/@opencode-ai/plugin/package.json" ||
+        jq -r '.dependencies["@opencode-ai/plugin"] // empty' "$oc_config/package.json"; } 2>/dev/null) || true
+    opencode=${opencode#[~^]}
+    if [[ -n $opencode ]] && ! grep -q "version = \"$opencode\"" "$SELF_DIR/flake.nix"; then
+        hash=$(nix store prefetch-file --json \
+            "https://github.com/anomalyco/opencode/releases/download/v$opencode/opencode-linux-x64.tar.gz" 2>/dev/null |
+            jq -r .hash) || hash=""
+        if [[ -n $hash ]]; then
+            sed -i -E "/pname = \"opencode\"/,/hash = /{
+                s|version = \"[^\"]+\"|version = \"$opencode\"|
+                s|hash = \"[^\"]+\"|hash = \"$hash\"|
+            }" "$SELF_DIR/flake.nix"
+            echo "agent-vm: guest opencode pinned to host's $opencode" >&2
+        else
+            echo "agent-vm: could not fetch opencode $opencode, keeping the old pin" >&2
+        fi
+    fi
+}
+
+update_deps() {
+    # In the guest, `claude` and the opencode config are the VM's own pins and copies, not the host's.
+    if mountpoint -q "$HOME/.agent-vm"; then echo "agent-vm: run update-deps on the host, not in the VM" >&2; exit 1; fi
+    cd "$SELF_DIR"
+    nix flake update
+    sync_agents
+
+    # Build a bare VM from this repo's own lock, independent of the machine config in local/.
+    nix build --no-link --impure --expr \
+        '((builtins.getFlake (toString ./.)).lib.mkAgentVm { user = "check"; configDir = "/nonexistent"; }).x86_64-linux.microvm-agent'
+    echo "agent-vm: VM build ok" >&2
+    git --no-pager diff --stat
+}
+
+WS=$PWD force=0 yolo=0 no_secrets=0 no_update=0 trust=() timeout=14400
 while [[ $# -gt 0 ]]; do
     case $1 in
         -w) WS=${2:?}; shift 2 ;;
         --force) force=1; shift ;;
         --yolo) yolo=1; shift ;;
         --no-secrets) no_secrets=1; trust=(--trust shares); shift ;;
+        --no-update) no_update=1; shift ;;
         --timeout) timeout=${2:?}; shift 2 ;;
         -h | --help) usage ;;
         *) break ;;
@@ -109,6 +162,7 @@ done
 cmd=$1; shift
 
 if [[ $cmd == setup ]]; then setup "$@"; exit; fi
+if [[ $cmd == update-deps ]]; then update_deps; exit; fi
 if [[ ! -f $CONFIG_DIR/flake.nix ]]; then echo "agent-vm: not set up yet, run: agent-vm setup" >&2; exit 1; fi
 
 vm() { nix run "$CONFIG_FLAKE#nix-vm" -- "$@"; }
@@ -130,6 +184,7 @@ fi
 run_dir=$WS
 if [[ $PWD == "$WS"/* ]]; then run_dir=$PWD; fi
 
+if [[ $no_update == 0 ]]; then sync_agents; fi
 # Local inputs (this repo, dev shells) are locked by rev; relock so the guest follows their HEADs.
 (nix flake update --flake "$CONFIG_FLAKE" --allow-dirty-locks 2>&1 | grep -v '^warning:' >&2) || true
 

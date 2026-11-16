@@ -45,6 +45,7 @@ agent-vm opencode run "..."              # headless opencode
 agent-vm run 'just unit'                 # any command, headless
 agent-vm console                         # login shell on the serial console (`poweroff` to leave)
 agent-vm --no-secrets ...                # no keyring tokens, no opencode auth.json
+agent-vm --no-update ...                 # keep the current Claude Code and opencode pins
 agent-vm vm list                         # raw nix-vm helper
 ```
 
@@ -67,8 +68,12 @@ Headless runs stop after `--timeout` seconds (default 4 h).
 - **Claude sessions** (`projects/<key>/*.jsonl` and session dirs) persist per workspace in `~/.local/state/agent-vm/sessions/<key>`, so `agent-vm claude --continue` / `--resume` work in a later VM.
   - They are saved when the launcher exits, including on SIGHUP/SIGTERM. A SIGKILLed launcher loses that run's sessions.
   - Only regular files are kept. They never go into the host's `~/.claude`, so host Claude does not see guest transcripts.
-- **opencode** is pinned to a release binary in `flake.nix`, so plugins built against `@opencode-ai/plugin` keep working.
-- **Claude Code** is pinned by `claude-manifest.json`. To bump it, download `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`.
+- **Guest agent versions follow the host:**
+  - Claude Code is pinned by `claude-manifest.json` to the host's `claude --version`.
+  - opencode is pinned in `flake.nix` to the host's installed `@opencode-ai/plugin` version, so host plugins keep working.
+  - Every launch re-pins both and leaves the change uncommitted in this repo. `--no-update` skips this.
+  - A missing host tool or a failed download keeps the old pin and does not stop the launch.
+- **Updating:** `agent-vm update-deps` bumps the flake inputs to their latest revisions, re-pins both agents, then builds a bare VM to check.
 - **Git in the guest:** HTTPS via `gh` and `GH_TOKEN`; SSH remotes are rewritten to HTTPS. Commits are unsigned; re-sign on the host before merging.
 - **After every run** the launcher lists new or replaced `.git` entries and greps their config for dangerous keys.
 
