@@ -189,7 +189,8 @@ if [[ $no_update == 0 ]]; then sync_agents; fi
 (nix flake update --flake "$CONFIG_FLAKE" --allow-dirty-locks 2>&1 | grep -v '^warning:' >&2) || true
 
 # Host Claude config goes in one way, as a private per-launch copy (reflinks on btrfs).
-# Settings drop host-only env, sandbox and hook commands (their binaries are not in the guest).
+# Settings drop host-only env and sandbox. Hooks survive only if their command is a script in
+# ~/.claude/hooks, which is copied too; other hook binaries are not in the guest.
 claude_dir=$HOME/.claude
 mkdir -p "$HOME/.cache/agent-vm"
 runtime_dir=$(mktemp -d "$HOME/.cache/agent-vm/run.XXXXXX")
@@ -200,7 +201,10 @@ for item in CLAUDE.md skills agents commands hooks plugins output-styles; do
     if [[ -e $claude_dir/$item ]]; then cp -a --reflink=auto "$claude_dir/$item" "$cstage/$item"; fi
 done
 if [[ -f $claude_dir/settings.json ]]; then
-    jq 'del(.env, .sandbox, .hooks)' "$claude_dir/settings.json" > "$cstage/settings.json"
+    jq 'del(.env, .sandbox) | .hooks = ((.hooks // {}) | with_entries(
+            .value |= map(.hooks |= map(select((.command // "") | test("^(~|\\$HOME)/\\.claude/hooks/")))
+                          | select(.hooks != []))
+        ) | with_entries(select(.value != [])))' "$claude_dir/settings.json" > "$cstage/settings.json"
 fi
 
 # opencode config and provider logins, also one way: guest token refreshes never reach the host.

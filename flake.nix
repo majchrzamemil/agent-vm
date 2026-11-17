@@ -127,6 +127,7 @@
               environment.systemPackages = [
                 claude-code
                 opencode
+                pkgs.curl
                 pkgs.gh
                 pkgs.jq
                 pkgs.ripgrep
