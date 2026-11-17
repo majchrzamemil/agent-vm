@@ -133,6 +133,7 @@
                 pkgs.ripgrep
                 pkgs.just
                 pkgs.nodejs
+                pkgs.python3
               ];
               environment.variables.CLAUDE_CONFIG_DIR = "${home}/.claude";
               programs.git = {
