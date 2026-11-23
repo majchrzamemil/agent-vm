@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run Claude Code, opencode or any command inside a nix-vm microVM scoped to one workspace.
 set -euo pipefail
+# Braced so bash parses the whole file up front; editing it mid-session cannot splice in garbage.
+{
 
 SELF_DIR=$(dirname "$(readlink -f "$0")")
 # Machine-specific config flake written by `agent-vm setup` (gitignored).
@@ -381,3 +383,4 @@ fi
 review_memory
 git_tripwire "$before"
 exit "$status"
+}
