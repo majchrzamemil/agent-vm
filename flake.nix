@@ -145,6 +145,11 @@
                 pkgs.just
                 pkgs.nodejs
                 pkgs.python3
+                # For Claude's rust-analyzer LSP plugin, which needs cargo and rustc to load a
+                # workspace. A `nix develop` toolchain still wins: it goes first on PATH.
+                pkgs.rust-analyzer
+                pkgs.cargo
+                pkgs.rustc
               ];
               environment.variables.CLAUDE_CONFIG_DIR = "${home}/.claude";
               programs.git = {
