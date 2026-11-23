@@ -22,6 +22,20 @@ secret-tool store --label 'agent-vm claude' service agent-vm key CLAUDE_CODE_OAU
 
 More secrets: store each under `service agent-vm key NAME` and list it in `local/flake.nix` as `extraSecrets = [ "NAME" ];`. The guest gets it as env var `NAME`.
 
+SSH for the agent: a dedicated key at `~/.config/agent-vm/ssh/id_ed25519` (optional).
+
+```bash
+mkdir -p ~/.config/agent-vm/ssh
+ssh-keygen -t ed25519 -f ~/.config/agent-vm/ssh/id_ed25519 -C agent-vm
+```
+
+- Each launch loads it into a separate `ssh-agent` (`$XDG_RUNTIME_DIR/agent-vm-ssh.sock`), which nix-vm forwards over vsock. The key file never enters the guest, so the guest can sign while it runs but cannot copy the key.
+- The host's own `SSH_AUTH_SOCK` is never forwarded. The key is removed from the dedicated agent when the last launch using it exits; a passphrase-protected key prompts on each first load.
+- `--no-secrets` leaves the agent out.
+- Pin the hosts the agent talks to with `programs.ssh.knownHosts` in `local/flake.nix` (`extraModules`).
+- Scope the key on the server: a low-privilege user, `restrict,from=...,command=...` in `authorized_keys`, read-only deploy keys.
+- GitHub stays on HTTPS: guest git rewrites `git@github.com:` remotes to HTTPS.
+
 `setup` writes the machine-specific config to `local/` (gitignored):
 
 - `local/flake.nix`: your user, home, the VM size and the dev-shell flakes. It calls `lib.mkAgentVm` from this repo. Edit it freely, for example to add `extraModules`. `setup --force` regenerates it.
@@ -44,7 +58,7 @@ agent-vm opencode                        # interactive opencode TUI
 agent-vm opencode run "..."              # headless opencode
 agent-vm run 'just unit'                 # any command, headless
 agent-vm console                         # login shell on the serial console (`poweroff` to leave)
-agent-vm --no-secrets ...                # no keyring tokens, no opencode auth.json
+agent-vm --no-secrets ...                # no keyring tokens, opencode auth.json or SSH agent
 agent-vm --no-update ...                 # keep the current Claude Code and opencode pins
 agent-vm vm list                         # raw nix-vm helper
 ```
@@ -93,7 +107,8 @@ Headless runs stop after `--timeout` seconds (default 4 h).
   - Building on the host while a VM runs changes the lower layer under the overlay. The overlayfs behaviour for that case is undefined.
   - The guest can read every host build artifact in `~/.cargo/target`, including those of other projects.
 - **Files the guest writes into the workspace** are owned by your host uid. virtiofsd squashes every guest uid and gid onto yours.
-- **Never shared:** the host home, `~/.ssh`, the ssh-agent (`forwardSshAgent = false`), and hardware keys.
+- **Never shared:** the host home, `~/.ssh`, the host's ssh-agent, and hardware keys.
+- **Agent SSH key:** reachable only through the dedicated agent. While any keyed launch runs, nix-vm's host relay serves every `agent` VM instance on its vsock port, so root in a concurrent `--no-secrets` guest could reach it too.
 
 ## Limits (to do)
 

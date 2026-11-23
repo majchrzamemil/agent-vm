@@ -124,6 +124,17 @@
                   done
                 '';
               };
+              # Its Include points into the host-shared /nix/store, whose squashed owner ssh rejects.
+              programs.ssh.systemd-ssh-proxy.enable = false;
+              # The bridge and its 25 s readiness wait run only when the launcher granted the agent key.
+              systemd.services.ssh-agent-bridge.unitConfig = {
+                RequiresMountsFor = [ stage ];
+                ConditionPathExists = "${stage}/ssh-agent";
+              };
+              systemd.services.ssh-agent-bridge-ready.unitConfig = {
+                RequiresMountsFor = [ stage ];
+                ConditionPathExists = "${stage}/ssh-agent";
+              };
               environment.systemPackages = [
                 claude-code
                 opencode
@@ -223,7 +234,8 @@
                 custom.microvms.agent = {
                   hypervisor = "qemu";
                   inherit vcpu mem;
-                  forwardSshAgent = false;
+                  # Bridged only to the launcher's dedicated agent, never the host's own.
+                  forwardSshAgent = true;
                   launchMountPoint = workspaceMount; # source = the launcher's --mount
                   trust.default = [
                     "shares"

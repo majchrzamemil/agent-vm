@@ -27,7 +27,7 @@ usage: agent-vm setup [--force] [--vcpu N] [--mem MiB] [--nix-vm FLAKEREF] [DEVS
 The workspace ($PWD, or -w DIR) is shared read-write at the same path; nothing else is.
   --force         allow a broad or sensitive workspace (e.g. $HOME)
   --yolo          claude --dangerously-skip-permissions / opencode --auto
-  --no-secrets    do not inject keyring secrets or opencode auth.json
+  --no-secrets    do not inject keyring secrets, opencode auth.json or the agent SSH key
   --no-update     do not pin guest Claude Code and opencode to the host's versions on start
   --timeout SECS  headless time limit (default 14400)
 USAGE
@@ -260,8 +260,18 @@ save_sessions() {
         cp -a --reflink=auto "$tmp/." "$sessions_dir/$key/"
     done
 }
+# A dedicated ssh-agent holds only the agent key; the guest gets signatures over vsock, never the key.
+ssh_key=${XDG_CONFIG_HOME:-$HOME/.config}/agent-vm/ssh/id_ed25519
+ssh_sock=${XDG_RUNTIME_DIR:-$HOME/.cache/agent-vm}/agent-vm-ssh.sock
+# nix-vm's relay outlives the VM, so the key leaves the agent once no launch uses it.
+drop_ssh_key() {
+    if [[ ${SSH_AUTH_SOCK:-} != "$ssh_sock" ]] || compgen -G "$HOME/.cache/agent-vm/run.*/stage/ssh-agent" > /dev/null; then
+        return
+    fi
+    ssh-add -D 2> /dev/null || true
+}
 # Set only after restoring, so an early abort never saves a partial stage. Runs on SIGHUP/SIGTERM too.
-trap 'save_sessions || true; rm -rf "$runtime_dir"' EXIT
+trap 'save_sessions || true; rm -rf "$runtime_dir"; drop_ssh_key' EXIT
 
 # Only regular top-level *.md files count, so planted symlinks or binaries never reach the host.
 review_memory() {
@@ -347,6 +357,18 @@ if [[ -z $headless ]]; then
             sleep 1
         done
     ) &
+fi
+# Never forward the host's own agent; only the dedicated one, and only when secrets are granted.
+unset SSH_AUTH_SOCK
+if [[ $no_secrets == 0 && -f $ssh_key ]]; then
+    export SSH_AUTH_SOCK=$ssh_sock
+    # Marked before loading, so a concurrent launch exiting meanwhile does not drop the key.
+    touch "$stage/ssh-agent"
+    agent_rc=0
+    ssh-add -l > /dev/null 2>&1 || agent_rc=$?
+    if [[ $agent_rc == 2 ]]; then rm -f "$ssh_sock"; ssh-agent -a "$ssh_sock" < /dev/null > /dev/null 2>&1; agent_rc=1; fi
+    if [[ $agent_rc == 1 ]]; then ssh-add -q "$ssh_key"; fi
+    trust=(--trust shares,secrets,agent)
 fi
 export AGENT_VM_STAGE=$stage
 before=$(git_inventory)
