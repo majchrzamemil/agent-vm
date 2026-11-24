@@ -291,8 +291,21 @@ review_memory() {
     echo "agent-vm: the agent changed Claude memory:" >&2
     cat "$patch" >&2
     answer=n
-    { read -r -p "Apply these memory changes to the host? [y/N] " answer < /dev/tty; } 2>/dev/null || true
-    if [[ $answer != [yY] ]]; then echo "agent-vm: memory changes discarded" >&2; return; fi
+    # read -p prompts on stderr, which the 2>/dev/null (there for a missing tty) would swallow.
+    # The console may leave the tty raw with typeahead queued; reset and drain it first.
+    printf 'Apply these memory changes to the host? [y/N] ' >&2
+    {
+        stty sane < /dev/tty
+        while read -r -t 0 < /dev/tty; do read -r < /dev/tty; done
+        read -r answer < /dev/tty
+    } 2>/dev/null || true
+    if [[ $answer != [yY] ]]; then
+        local keep
+        keep=${XDG_STATE_HOME:-$HOME/.local/state}/agent-vm/discarded-memory/$(date +%Y%m%d-%H%M%S)
+        mkdir -p "$keep" && cp -a "$runtime_dir/clean/." "$keep/"
+        echo "agent-vm: memory changes discarded; guest copy kept in $keep" >&2
+        return
+    fi
     for key in "${project_keys[@]}"; do
         host=$claude_dir/projects/$key/memory clean=$runtime_dir/clean/$key
         if [[ -z $(ls -A "$clean") && ! -d $host ]]; then continue; fi
