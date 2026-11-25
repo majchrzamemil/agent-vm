@@ -219,6 +219,9 @@ if [[ -d $oc_config ]]; then
     cp -a --reflink=auto "$oc_config/." "$stage/opencode/config/"
     rm -f "$stage/opencode/config/service.json"
 fi
+# Guest opencode sessions (opencode.db, snapshots) persist per workspace, apart from the host's.
+oc_sessions=${XDG_STATE_HOME:-$HOME/.local/state}/agent-vm/opencode/${WS//[^a-zA-Z0-9]/-}
+if [[ -d $oc_sessions ]]; then cp -a --reflink=auto "$oc_sessions/." "$stage/opencode/data/"; fi
 if [[ $no_secrets == 0 && -f $oc_data/auth.json ]]; then
     install -m 600 "$oc_data/auth.json" "$stage/opencode/data/auth.json"
 fi
@@ -261,6 +264,14 @@ save_sessions() {
         find "$tmp" ! -type f ! -type d -delete
         cp -a --reflink=auto "$tmp/." "$sessions_dir/$key/"
     done
+    # Replaced, not merged: a stale -wal next to a newer opencode.db would corrupt it.
+    tmp=$runtime_dir/sessions/opencode
+    mkdir -p "$tmp"
+    cp -a --reflink=auto "$stage/opencode/data/." "$tmp/"
+    rm -f "$tmp/auth.json"
+    find "$tmp" ! -type f ! -type d -delete
+    mkdir -p "${oc_sessions%/*}"
+    rm -rf "$oc_sessions" && mv "$tmp" "$oc_sessions"
 }
 # A dedicated ssh-agent holds only the agent key; the guest gets signatures over vsock, never the key.
 ssh_key=${XDG_CONFIG_HOME:-$HOME/.config}/agent-vm/ssh/id_ed25519

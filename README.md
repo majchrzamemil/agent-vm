@@ -88,6 +88,8 @@ Headless runs stop after `--timeout` seconds (default 4 h).
 - **Claude sessions** (`projects/<key>/*.jsonl` and session dirs) persist per workspace in `~/.local/state/agent-vm/sessions/<key>`, so `agent-vm claude --continue` / `--resume` work in a later VM.
   - They are saved when the launcher exits, including on SIGHUP/SIGTERM. A SIGKILLed launcher loses that run's sessions.
   - Only regular files are kept. They never go into the host's `~/.claude`, so host Claude does not see guest transcripts.
+- **opencode sessions** (the guest's `~/.local/share/opencode` minus `auth.json`) persist per workspace in `~/.local/state/agent-vm/opencode/<key>`, saved the same way.
+  - The whole directory is replaced on exit, so of two concurrent launches in one workspace only the last to exit keeps its sessions.
 - **Guest agent versions follow the host:**
   - Claude Code is pinned by `claude-manifest.json` to the host's `claude --version`.
   - opencode is pinned in `flake.nix` to the host's installed `@opencode-ai/plugin` version, so host plugins keep working.
