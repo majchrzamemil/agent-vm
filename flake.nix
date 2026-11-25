@@ -95,6 +95,23 @@
                 nativeBuildInputs = [ pkgs.autoPatchelfHook ];
                 installPhase = "install -Dm755 opencode $out/bin/opencode";
               };
+              # Claude's Ctrl+V runs `xclip ... -o -t TARGETS`, then `-t image/png`. The launcher answers
+              # a request in the stage with the host clipboard's PNG; text and copying are refused.
+              xclip = pkgs.writeShellScriptBin "xclip" ''
+                case "$*" in
+                  *"-o -t TARGETS")
+                    [ -f "${stage}/tty" ] || exit 1
+                    rm -f "${stage}/clip"
+                    : > "${stage}/clip-request"
+                    for _ in {1..28}; do
+                      [ -e "${stage}/clip" ] && break
+                      sleep 0.1
+                    done
+                    [ -s "${stage}/clip" ] && echo image/png ;;
+                  *"-o -t image/png") [ -s "${stage}/clip" ] && exec cat "${stage}/clip" ;;
+                  *) exit 1 ;;
+                esac
+              '';
             in
             {
               systemd.tmpfiles.rules = [
@@ -138,6 +155,7 @@
               environment.systemPackages = [
                 claude-code
                 opencode
+                xclip
                 pkgs.curl
                 pkgs.gh
                 pkgs.jq

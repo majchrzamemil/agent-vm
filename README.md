@@ -65,6 +65,12 @@ agent-vm vm list                         # raw nix-vm helper
 
 Headless runs stop after `--timeout` seconds (default 4 h).
 
+**Pasting screenshots:** in an interactive `agent-vm claude`, Ctrl+V pastes the host clipboard's image.
+
+- The guest's `xclip` is a shim. On request, the launcher reads the host clipboard (`wl-paste` on Wayland, else `xclip`) and passes only an `image/png` through the stage.
+- Text paste goes through the terminal as usual. Copying out of the guest uses the terminal too (OSC 52).
+- While an interactive session runs, anything in the guest can request the current clipboard image, not only your Ctrl+V.
+
 ## Agent config and memory
 
 - **Copied in at every launch** to `~/.cache/agent-vm/run.*/stage` (reflinked on btrfs) and shared at the guest's `~/.agent-vm`. The copy is deleted when the VM exits.

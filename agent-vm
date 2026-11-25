@@ -372,6 +372,26 @@ if [[ -z $headless ]]; then
             sleep 1
         done
     ) &
+    host_clipboard_png() {
+        if [[ -n ${WAYLAND_DISPLAY:-} ]]; then
+            grep -qx image/png <<< "$(wl-paste --list-types 2>/dev/null)" && wl-paste --type image/png
+        else
+            grep -qx image/png <<< "$(xclip -selection clipboard -o -t TARGETS 2>/dev/null)" &&
+                xclip -selection clipboard -o -t image/png
+        fi
+    }
+    # The guest's xclip shim (Claude's Ctrl+V) asks for the host clipboard; only a PNG is answered.
+    # Written outside the guest-writable stage and renamed in, so a planted symlink is never followed.
+    (
+        while [[ -d $stage ]]; do
+            if [[ -e $stage/clip-request ]]; then
+                rm -f "$stage/clip-request"
+                host_clipboard_png > "$runtime_dir/clip" || : > "$runtime_dir/clip"
+                mv -fT "$runtime_dir/clip" "$stage/clip"
+            fi
+            sleep 0.2
+        done
+    ) 2>/dev/null &
 fi
 # Never forward the host's own agent; only the dedicated one, and only when secrets are granted.
 unset SSH_AUTH_SOCK
