@@ -95,20 +95,23 @@
                 nativeBuildInputs = [ pkgs.autoPatchelfHook ];
                 installPhase = "install -Dm755 opencode $out/bin/opencode";
               };
-              # Claude's Ctrl+V runs `xclip ... -o -t TARGETS`, then `-t image/png`. The launcher answers
-              # a request in the stage with the host clipboard's PNG; text and copying are refused.
+              # Claude's Ctrl+V runs `xclip ... -o -t TARGETS`, then `-t image/png`; opencode only
+              # `-t image/png -o`. Each read fetches the host clipboard's PNG; text and copying are refused.
               xclip = pkgs.writeShellScriptBin "xclip" ''
-                case "$*" in
-                  *"-o -t TARGETS")
-                    [ -f "${stage}/tty" ] || exit 1
-                    rm -f "${stage}/clip"
-                    : > "${stage}/clip-request"
-                    for _ in {1..28}; do
-                      [ -e "${stage}/clip" ] && break
-                      sleep 0.1
-                    done
-                    [ -s "${stage}/clip" ] && echo image/png ;;
-                  *"-o -t image/png") [ -s "${stage}/clip" ] && exec cat "${stage}/clip" ;;
+                fetch_host_png() {
+                  [ -f "${stage}/tty" ] || exit 1
+                  rm -f "${stage}/clip"
+                  : > "${stage}/clip-request"
+                  for _ in {1..28}; do
+                    [ -e "${stage}/clip" ] && break
+                    sleep 0.1
+                  done
+                  [ -s "${stage}/clip" ]
+                }
+                case " $* " in *" -o "*) ;; *) exit 1 ;; esac
+                case " $* " in
+                  *" -t TARGETS "*) fetch_host_png && echo image/png ;;
+                  *" -t image/png "*) fetch_host_png && exec cat "${stage}/clip" ;;
                   *) exit 1 ;;
                 esac
               '';
